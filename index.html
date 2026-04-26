@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Memo">
+<meta id="themeColorMeta" name="theme-color" content="#F2F0EB">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>Memo — Smart Flashcards</title>
+
+<!-- Apply theme before CSS to prevent flash -->
+<script>
+(function(){
+  try {
+    var raw = localStorage.getItem('memo_v1');
+    if (raw) {
+      var d = JSON.parse(raw);
+      var th = (d.settings && d.settings.theme) || 'light';
+      if (th === 'auto') th = window.matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', th);
+    }
+  } catch(e) {}
+})();
+</script>
+
+<!-- Auto-update via ETag (same as CalSnap) -->
+<script>
+(function() {
+  try {
+    var last = parseInt(sessionStorage.getItem('_sl') || '0');
+    var now = Date.now();
+    sessionStorage.setItem('_sl', now);
+    if (now - last < 4000) {
+      document.addEventListener('DOMContentLoaded', function() {
+        var s = document.getElementById('splashOv');
+        if (s) s.style.display = 'none';
+      });
+    }
+  } catch(e) {}
+  if (!navigator.onLine) return;
+  try {
+    var savedEtag = localStorage.getItem('_etag');
+    var headers = {'Cache-Control': 'no-cache'};
+    if (savedEtag) headers['If-None-Match'] = savedEtag;
+    fetch(location.pathname, {method:'HEAD', headers:headers, cache:'no-store'})
+      .then(function(res) {
+        var newEtag = res.headers.get('ETag') || res.headers.get('Last-Modified');
+        if (!newEtag) return;
+        if (res.status === 200 && savedEtag && newEtag !== savedEtag) {
+          localStorage.setItem('_etag', newEtag);
+          var kills = [];
+          if ('serviceWorker' in navigator) {
+            kills.push(navigator.serviceWorker.getRegistrations().then(function(regs){
+              return Promise.all(regs.map(function(r){ return r.unregister(); }));
+            }));
+          }
+          if ('caches' in window) {
+            kills.push(caches.keys().then(function(ks){
+              return Promise.all(ks.map(function(k){ return caches.delete(k); }));
+            }));
+          }
+          Promise.all(kills).then(function() {
+            window.location.replace(location.pathname + '?_=' + Date.now());
+          });
+        } else if (newEtag) {
+          localStorage.setItem('_etag', newEtag);
+        }
+      }).catch(function(){});
+  } catch(e) {}
+})();
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="dns-prefetch" href="https://generativelanguage.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;0,9..40,900;1,9..40,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ══════════════════════════════════════
+     SPLASH SCREEN
+══════════════════════════════════════ -->
+<div class="splash-ov" id="splashOv">
+  <span class="splash-icon">🧠</span>
+  <div class="splash-title">Me<b>mo</b></div>
+  <div class="splash-sub">Smart Flashcards</div>
+</div>
+
+<!-- ══════════════════════════════════════
+     ONBOARDING
+══════════════════════════════════════ -->
+<div id="onboard">
+  <span class="ob-icon">🧠</span>
+  <div class="ob-title">Добро пожаловать в <b>Memo</b></div>
+  <div class="ob-sub">Умные карточки с интервальным повторением.<br>Учите быстрее — помните дольше.</div>
+  <div class="ob-form">
+    <button class="btn" onclick="finishOnboard()">Начать</button>
+    <button class="btn-ghost" style="margin-top:10px" onclick="skipOnboard()">Пропустить</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     NAVIGATION BAR
+══════════════════════════════════════ -->
+<nav id="nav">
+  <div id="navPill"></div>
+  <div class="nb" data-tab="home">
+    <span class="nb-icon">🏠</span>
+    <span class="nb-lbl">Главная</span>
+  </div>
+  <div class="nb" data-tab="decks">
+    <span class="nb-icon">📚</span>
+    <span class="nb-lbl">Колоды</span>
+  </div>
+  <div class="nb" data-tab="browse">
+    <span class="nb-icon">🔍</span>
+    <span class="nb-lbl">Поиск</span>
+  </div>
+  <div class="nb" data-tab="settings">
+    <span class="nb-icon">⚙️</span>
+    <span class="nb-lbl">Настройки</span>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════
+     HOME SCREEN
+══════════════════════════════════════ -->
+<div id="home" class="screen">
+  <div class="home-hero" id="homeHero"></div>
+  <div class="streak-banner" id="homeStreak" onclick="Nav.go('settings')"></div>
+  <div class="sec">
+    <div class="sec-lbl">Ваши колоды</div>
+    <div id="homeDecks"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     DECKS SCREEN
+══════════════════════════════════════ -->
+<div id="decks" class="screen">
+  <div class="scr-hdr">
+    <div class="scr-hdr-row">
+      <h2>Колоды</h2>
+      <button class="hdr-btn" onclick="UI.openAddDeck()">+</button>
+    </div>
+  </div>
+  <div style="height:12px"></div>
+  <div class="deck-grid" id="deckList"></div>
+  <button class="fab" onclick="UI.openAddDeck()">+</button>
+</div>
+
+<!-- ══════════════════════════════════════
+     BROWSE / SEARCH SCREEN
+══════════════════════════════════════ -->
+<div id="browse" class="screen">
+  <div class="scr-hdr">
+    <h2>Поиск</h2>
+  </div>
+  <div class="browse-search-bar">
+    <div class="search-input-wrap">
+      <span class="search-icon">🔍</span>
+      <input class="search-inp" id="searchInp" type="search" placeholder="Поиск по карточкам..." autocomplete="off">
+    </div>
+  </div>
+  <div class="browse-filter-row" id="browseFilters"></div>
+  <div class="browse-cards" id="browseCards"></div>
+</div>
+
+<!-- ══════════════════════════════════════
+     SETTINGS SCREEN
+══════════════════════════════════════ -->
+<div id="settings" class="screen">
+  <div class="scr-hdr">
+    <h2>Настройки</h2>
+  </div>
+  <div id="settContent"></div>
+</div>
+
+<!-- ══════════════════════════════════════
+     STUDY SESSION (fullscreen overlay)
+══════════════════════════════════════ -->
+<div id="study-wrap">
+  <!-- Top bar -->
+  <div class="study-topbar">
+    <button class="study-close" onclick="Study.close()">✕</button>
+    <div class="study-progress-bar">
+      <div class="study-progress-fill" id="studyProgressFill" style="width:0%"></div>
+    </div>
+    <span class="study-counter" id="studyCounter">0/0</span>
+  </div>
+
+  <!-- Card scene -->
+  <div class="study-scene" id="studyScene">
+    <div class="study-card-inner" id="studyCardInner">
+      <!-- Front face -->
+      <div class="study-card-face front">
+        <span class="study-card-label">Вопрос</span>
+        <div class="study-card-text" id="studyFrontText"></div>
+        <div class="study-card-hint" id="studyTapHint">
+          <span class="study-card-hint-icon">👆</span>
+          Нажмите чтобы перевернуть
+        </div>
+      </div>
+      <!-- Back face -->
+      <div class="study-card-face back">
+        <span class="study-card-label">Ответ</span>
+        <div class="study-card-text" id="studyBackText"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Done state -->
+  <div id="studyDone" style="display:none;flex:1;flex-direction:column">
+    <div id="studyDoneContent" class="study-done"></div>
+  </div>
+
+  <!-- Rating buttons -->
+  <div class="study-ratings" id="studyRatings" style="display:none">
+    <button class="rating-btn rating-again" onclick="Study.rate(0)">
+      <span class="rb-emoji">😞</span>
+      <span>Снова</span>
+      <span class="rb-days" id="ratingDays0"></span>
+    </button>
+    <button class="rating-btn rating-hard" onclick="Study.rate(1)">
+      <span class="rb-emoji">😐</span>
+      <span>Сложно</span>
+      <span class="rb-days" id="ratingDays1"></span>
+    </button>
+    <button class="rating-btn rating-good" onclick="Study.rate(2)">
+      <span class="rb-emoji">🙂</span>
+      <span>Хорошо</span>
+      <span class="rb-days" id="ratingDays2"></span>
+    </button>
+    <button class="rating-btn rating-easy" onclick="Study.rate(3)">
+      <span class="rb-emoji">😄</span>
+      <span>Легко</span>
+      <span class="rb-days" id="ratingDays3"></span>
+    </button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     TEST MODE (fullscreen overlay)
+══════════════════════════════════════ -->
+<div id="test-wrap">
+  <div class="study-topbar">
+    <button class="study-close" onclick="TestMode.close()">✕</button>
+    <div class="study-progress-bar">
+      <div class="study-progress-fill" id="testProgressFill" style="width:0%"></div>
+    </div>
+    <span class="study-counter" id="testCounter">0/0</span>
+  </div>
+  <div class="test-body">
+    <div class="test-question" id="testQuestion"></div>
+    <div class="test-options" id="testOptions"></div>
+  </div>
+  <div class="test-footer">
+    <span class="test-score" id="testScore">0/0</span>
+    <button class="btn-sm" onclick="TestMode.close()">✕ Закрыть</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     MATCH MODE (fullscreen overlay)
+══════════════════════════════════════ -->
+<div id="match-wrap">
+  <div class="study-topbar">
+    <button class="study-close" onclick="MatchMode.close()">✕</button>
+    <div class="match-header-info">
+      <span class="match-pairs-left" id="matchPairsLeft"></span>
+    </div>
+  </div>
+  <div class="match-body">
+    <div class="match-grid" id="matchGrid"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     SHEETS / OVERLAYS
+══════════════════════════════════════ -->
+
+<!-- Deck Detail Sheet -->
+<div class="ov" id="deckDetailOv">
+  <div class="sheet" style="max-height:95vh">
+    <div class="sh-handle"></div>
+    <div class="sh-hdr">
+      <h3>Колода</h3>
+      <button class="sh-close" onclick="closeSheet('deckDetailOv')">✕</button>
+    </div>
+    <div id="deckDetailContent"></div>
+  </div>
+</div>
+
+<!-- Deck Menu Sheet -->
+<div class="ov" id="deckMenuOv">
+  <div class="sheet">
+    <div class="sh-handle"></div>
+    <div id="deckMenuContent"></div>
+  </div>
+</div>
+
+<!-- Add/Edit Deck Sheet -->
+<div class="ov" id="deckSheetOv">
+  <div class="sheet">
+    <div class="sh-handle"></div>
+    <div class="sh-hdr">
+      <h3 id="deckSheetTitle">Новая колода</h3>
+      <button class="sh-close" onclick="closeSheet('deckSheetOv')">✕</button>
+    </div>
+    <div class="sh-body">
+      <input type="hidden" id="deckSheetId">
+      <input type="hidden" id="deckSheetColor" data-val="purple">
+      <input type="hidden" id="deckSheetEmoji" data-val="📚">
+
+      <label class="inp-lbl">Название</label>
+      <input class="inp inp-gap" id="deckNameInp" type="text" placeholder="Например: Английский язык">
+
+      <label class="inp-lbl">Описание (необязательно)</label>
+      <input class="inp inp-gap" id="deckDescInp" type="text" placeholder="Краткое описание колоды">
+
+      <label class="inp-lbl">Иконка</label>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;padding:4px 0 12px" id="deckEmojiPicker"></div>
+
+      <label class="inp-lbl">Цвет</label>
+      <div class="color-row" id="deckColorPicker"></div>
+
+      <div class="mt16">
+        <button class="btn" onclick="UI.saveDeck()">Сохранить</button>
+        <button class="btn-ghost" style="margin-top:10px" onclick="closeSheet('deckSheetOv')">Отмена</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit Card Sheet -->
+<div class="ov" id="cardSheetOv">
+  <div class="sheet">
+    <div class="sh-handle"></div>
+    <div class="sh-hdr">
+      <h3 id="cardSheetTitle">Новая карточка</h3>
+      <button class="sh-close" onclick="closeSheet('cardSheetOv')">✕</button>
+    </div>
+    <div class="sh-body">
+      <input type="hidden" id="cardSheetDeckId">
+      <input type="hidden" id="cardSheetCardId">
+
+      <label class="inp-lbl">Вопрос (лицевая сторона)</label>
+      <textarea class="inp inp-gap" id="cardFrontInp" rows="3" placeholder="Например: What is photosynthesis?"></textarea>
+
+      <label class="inp-lbl">Ответ (обратная сторона)</label>
+      <textarea class="inp inp-gap" id="cardBackInp" rows="4" placeholder="Например: The process by which plants convert light into energy..."></textarea>
+
+      <label class="inp-lbl">Теги (через запятую)</label>
+      <input class="inp inp-gap" id="cardTagsInp" type="text" placeholder="biology, chapter1, exam">
+
+      <div class="mt16">
+        <button class="btn" onclick="UI.saveCard()">Сохранить</button>
+        <button class="btn-ghost" style="margin-top:10px" onclick="closeSheet('cardSheetOv')">Отмена</button>
+        <button id="cardSheetDelete" class="btn-ghost" style="margin-top:10px;color:var(--err);border-color:var(--err2);display:none" onclick="UI.deleteCard()">Удалить карточку</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Import Sheet -->
+<div class="ov" id="importSheetOv">
+  <div class="sheet">
+    <div class="sh-handle"></div>
+    <div class="sh-hdr">
+      <h3>Импорт карточек</h3>
+      <button class="sh-close" onclick="closeSheet('importSheetOv')">✕</button>
+    </div>
+    <div class="sh-body">
+      <label class="inp-lbl">В колоду</label>
+      <select class="inp inp-gap" id="importDeckSelect" style="appearance:none;cursor:pointer">
+        <option value="">Выберите колоду...</option>
+      </select>
+
+      <label class="inp-lbl">Файл (.txt — формат Anki)</label>
+      <div class="upzone" id="uploadZone" onclick="document.getElementById('importFileInput').click()">
+        <span class="uz-icon">📄</span>
+        <h4>Выберите файл</h4>
+        <p>Поддерживается: .txt (Anki), разделитель: табуляция<br>Формат: Вопрос⇥Ответ⇥Теги</p>
+      </div>
+      <input type="file" id="importFileInput" accept=".txt,.tsv" style="display:none"
+             onchange="UI.handleImportFile(this)">
+
+      <div class="sec-lbl mt12">Вставить текст вручную</div>
+      <textarea class="inp" id="importTextArea" rows="5"
+        placeholder="Вопрос&#9;Ответ&#10;Take a break&#9;Взять перерыв&#10;Make a mistake&#9;Совершить ошибку"></textarea>
+      <button class="btn-ghost mt8" onclick="UI.importFromText()">Импортировать текст</button>
+
+      <div id="importStatus" style="margin-top:12px;font-size:14px;color:var(--ok);font-weight:600;min-height:20px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- AI Generation Sheet -->
+<div class="ov" id="aiSheetOv">
+  <div class="sheet">
+    <div class="sh-handle"></div>
+    <div class="sh-hdr">
+      <h3>✨ ИИ-генерация карточек</h3>
+      <button class="sh-close" onclick="closeSheet('aiSheetOv')">✕</button>
+    </div>
+    <div class="sh-body">
+      <label class="inp-lbl">В колоду</label>
+      <select class="inp inp-gap" id="aiDeckSelect" style="appearance:none;cursor:pointer">
+        <option value="">Выберите колоду...</option>
+      </select>
+
+      <label class="inp-lbl">Тема</label>
+      <input class="inp inp-gap" id="aiTopicInp" type="text" placeholder="Например: Фразовые глаголы английского языка">
+
+      <!-- Quick topic suggestions -->
+      <div class="ai-tag-row" id="aiTopicTags">
+        <span class="ai-tag" onclick="_aiTagPick(this)">Английский</span>
+        <span class="ai-tag" onclick="_aiTagPick(this)">История</span>
+        <span class="ai-tag" onclick="_aiTagPick(this)">Биология</span>
+        <span class="ai-tag" onclick="_aiTagPick(this)">Математика</span>
+        <span class="ai-tag" onclick="_aiTagPick(this)">Программирование</span>
+        <span class="ai-tag" onclick="_aiTagPick(this)">Химия</span>
+        <span class="ai-tag" onclick="_aiTagPick(this)">Физика</span>
+        <span class="ai-tag" onclick="_aiTagPick(this)">Право</span>
+      </div>
+
+      <div class="gap-row mt12">
+        <div>
+          <label class="inp-lbl">Количество</label>
+          <input class="inp" id="aiCountInp" type="number" min="3" max="30" value="10">
+        </div>
+        <div>
+          <label class="inp-lbl">Язык карточек</label>
+          <select class="inp" id="aiLangSelect" style="appearance:none;cursor:pointer">
+            <option value="Russian">Русский</option>
+            <option value="English">English</option>
+            <option value="Both (Russian + English)">RU + EN</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="aiStatus" class="ai-status" style="display:none"></div>
+
+      <div class="mt16">
+        <button class="btn" onclick="UI.runAI();document.getElementById('aiStatus').style.display='flex'">
+          ✨ Сгенерировать
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     CONFIRM DIALOG
+══════════════════════════════════════ -->
+<div id="confirmOv">
+  <div class="confirm-box">
+    <div class="confirm-icon" id="confirmIcon">⚠️</div>
+    <div class="confirm-title" id="confirmTitle"></div>
+    <div class="confirm-msg" id="confirmMsg"></div>
+    <div class="confirm-btns">
+      <button class="btn-ghost" onclick="confirmCancel()">Отмена</button>
+      <button class="btn" id="confirmOkBtn" style="background:linear-gradient(160deg,#c62626,#911010)" onclick="confirmOk()">Удалить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════
+     TOAST
+══════════════════════════════════════ -->
+<div id="toast"></div>
+
+<!-- ══════════════════════════════════════
+     SCRIPTS
+══════════════════════════════════════ -->
+<script src="app.js"></script>
+<script>
+// ── Extra UI helpers that need DOM ──
+
+// AI tag quick-pick
+function _aiTagPick(el) {
+  document.querySelectorAll('.ai-tag').forEach(t => t.classList.remove('on'));
+  el.classList.add('on');
+  document.getElementById('aiTopicInp').value = el.textContent.trim();
+  HFX.light();
+}
+
+// Import text area
+UI.importFromText = function() {
+  const text = document.getElementById('importTextArea').value.trim();
+  if (!text) { showToast('Введите текст для импорта'); return; }
+  const deckId = document.getElementById('importDeckSelect').value;
+  if (!deckId) { showToast('Выберите колоду'); return; }
+  const count = IO.importTxt(text, deckId);
+  document.getElementById('importStatus').textContent = `✅ Импортировано: ${count}`;
+  document.getElementById('importTextArea').value = '';
+  Decks.render();
+  if (Nav.current === 'home') Home.render();
+  showToast(`✅ Импортировано: ${count}`);
+  HFX.success();
+};
+
+// Nav pill drag (same as CalSnap)
+(function initNavPill() {
+  const nav = document.getElementById('nav');
+  const pill = document.getElementById('navPill');
+  if (!nav || !pill) return;
+  const SPRING = 'left .32s cubic-bezier(.22,1,.36,1), width .32s cubic-bezier(.22,1,.36,1)';
+  const PAD = 0.06;
+  pill.style.transition = SPRING;
+
+  function setPillToBtn(btn) {
+    const r = btn.getBoundingClientRect();
+    const nr = nav.getBoundingClientRect();
+    pill.style.left = (r.left - nr.left + r.width * PAD) + 'px';
+    pill.style.width = (r.width * (1 - PAD * 2)) + 'px';
+    pill.style.top = '6px';
+    pill.style.height = 'calc(100% - 12px)';
+  }
+
+  window._updatePill = function() {
+    const active = nav.querySelector('.nb.on');
+    if (active) setPillToBtn(active);
+  };
+
+  window.addEventListener('resize', window._updatePill);
+
+  let dragging = false, startBtn = null;
+  const nbs = [...nav.querySelectorAll('.nb')];
+
+  nav.addEventListener('touchstart', e => {
+    const t = e.target.closest('.nb');
+    if (!t) return;
+    const touch = e.touches[0];
+    const pr = pill.getBoundingClientRect();
+    if (touch.clientX < pr.left || touch.clientX > pr.right ||
+        touch.clientY < pr.top  || touch.clientY > pr.bottom) return;
+    startBtn = t; dragging = true;
+    pill.style.transition = 'none';
+  }, {passive:true});
+
+  nav.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    const x = e.touches[0].clientX;
+    for (let i = 0; i < nbs.length - 1; i++) {
+      const a = nbs[i].getBoundingClientRect();
+      const b = nbs[i+1].getBoundingClientRect();
+      const aC = a.left + a.width/2, bC = b.left + b.width/2;
+      if (x >= aC && x <= bC) {
+        const tt = (x - aC) / (bC - aC);
+        pill.style.left = ((a.left - nav.getBoundingClientRect().left + a.width*PAD) + (b.left - a.left)*tt) + 'px';
+        pill.style.width = ((a.width*(1-PAD*2)) + (b.width-a.width)*tt) + 'px';
+        return;
+      }
+    }
+    const first = nbs[0].getBoundingClientRect();
+    const last  = nbs[nbs.length-1].getBoundingClientRect();
+    if (x < first.left + first.width/2) setPillToBtn(nbs[0]);
+    else setPillToBtn(nbs[nbs.length-1]);
+  }, {passive:true});
+
+  nav.addEventListener('touchend', e => {
+    if (!dragging) return;
+    dragging = false;
+    pill.style.transition = SPRING;
+    const x = e.changedTouches[0].clientX;
+    let nearest = nbs[0], nearestDist = Infinity;
+    for (const nb of nbs) {
+      const r = nb.getBoundingClientRect();
+      const d = Math.abs(x - (r.left + r.width/2));
+      if (d < nearestDist) { nearestDist = d; nearest = nb; }
+    }
+    if (nearest !== startBtn) nearest.click();
+    else setPillToBtn(nearest);
+  }, {passive:true});
+})();
+
+// Swipe left/right on study card
+(function initStudySwipe() {
+  const scene = document.getElementById('studyScene');
+  if (!scene) return;
+  let startX = 0, startY = 0;
+  scene.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  }, {passive:true});
+  scene.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - startX;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) {
+      // Swipe right = Good, Swipe left = Again (only if flipped)
+      if (session && session.flipped) {
+        Study.rate(dx > 0 ? 2 : 0);
+      }
+    }
+  }, {passive:true});
+})();
+
+// Keyboard shortcuts for study
+document.addEventListener('keydown', e => {
+  if (!session) return;
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    if (!session.flipped) Study.flip();
+  }
+  if (session.flipped) {
+    if (e.code === 'Digit1') Study.rate(0);
+    if (e.code === 'Digit2') Study.rate(1);
+    if (e.code === 'Digit3') Study.rate(2);
+    if (e.code === 'Digit4') Study.rate(3);
+    if (e.code === 'ArrowLeft')  Study.rate(0);
+    if (e.code === 'ArrowRight') Study.rate(3);
+    if (e.code === 'ArrowDown')  Study.rate(2);
+  }
+});
+
+// Update rating button labels on language change
+const _origSetLang = Settings.setLang.bind(Settings);
+Settings.setLang = function(code) {
+  _origSetLang(code);
+  // Update static study labels
+  const map = {0:'Снова',1:'Сложно',2:'Хорошо',3:'Легко'};
+  if (code === 'en') { map[0]='Again'; map[1]='Hard'; map[2]='Good'; map[3]='Easy'; }
+  document.querySelectorAll('.rating-btn span:nth-child(2)').forEach((el, i) => {
+    if (map[i] !== undefined) el.textContent = map[i];
+  });
+};
+</script>
+
+</body>
+</html>
